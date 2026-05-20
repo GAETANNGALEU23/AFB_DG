@@ -165,7 +165,7 @@ with st.sidebar:
     st.markdown("<div style='text-align: center;'>", unsafe_allow_html=True)
     # Remplacer cette URL générique par l'URL brute de votre logo ou un fichier local (ex: "logo.png")
     url_logo_afb = "https://raw.githubusercontent.com/FortAwesome/Font-Awesome/master/svgs/solid/building-columns.svg"
-    st.image(LOGO_AFRILAND, width=70, caption="Afriland First Bank")
+    st.image(LOGO_AFRILAND.png, width=70, caption="Afriland First Bank")
     st.markdown("<h4 style='color: #D32F2F; margin-top:5px; font-weight:bold;'>PILOTAGE SATISFACTION</h4>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("---")
