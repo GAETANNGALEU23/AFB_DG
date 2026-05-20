@@ -103,6 +103,11 @@ st.markdown("""
 # ==============================================================================
 # 2. FONCTION DE PRÉ-TRAITEMENT ET NETTOYAGE DES DONNÉES
 # ==============================================================================
+
+
+
+
+
 def load_and_preprocess(file_source):
     # Lecture dynamique du fichier source (détecte si c'est un buffer ou un chemin)
     df = pd.read_csv(file_source)
