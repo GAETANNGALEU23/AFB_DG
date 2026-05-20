@@ -105,14 +105,22 @@ st.markdown("""
 # 2. FONCTION DE PRÉ-TRAITEMENT ET NETTOYAGE DES DONNÉES
 # ==============================================================================
 def load_and_preprocess(file_source):
-    # Lecture adaptative pour neutraliser l'erreur de codec 'utf-8' sur les caractères accentués
+    # Vérification préventive si la source est un fichier local vide
+    if isinstance(file_source, str) and os.path.exists(file_source) and os.path.getsize(file_source) == 0:
+        raise ValueError("Le fichier de référence local est complètement vide (0 octet).")
+
+    # Lecture adaptative pour gérer les encodages et intercepter les fichiers vides
     try:
-        df = pd.read_csv(file_source, encoding='utf-8')
-    except UnicodeDecodeError:
         try:
-            df = pd.read_csv(file_source, encoding='latin-1')
+            df = pd.read_csv(file_source, encoding='utf-8')
         except UnicodeDecodeError:
-            df = pd.read_csv(file_source, encoding='utf-8-sig')
+            try:
+                df = pd.read_csv(file_source, encoding='latin-1')
+            except UnicodeDecodeError:
+                df = pd.read_csv(file_source, encoding='utf-8-sig')
+    except pd.errors.EmptyDataError:
+        # Renvoie une exception explicite et propre au lieu d'un crash brut
+        raise ValueError("Le fichier importé ne contient aucune donnée ou colonne valide (Fichier vide).")
     
     # Nettoyage préventif des espaces multiples et invisibles en début/fin des en-têtes de colonnes
     df.columns = df.columns.str.strip()
@@ -180,7 +188,6 @@ def load_and_preprocess(file_source):
 with st.sidebar:
     st.markdown("<div style='text-align: center;'>", unsafe_allow_html=True)
     
-    # Gestion sécurisée du chargement du Logo local / Cloud
     if os.path.exists("LOGO_AFRILAND.png"):
         st.image("LOGO_AFRILAND.png", width=70, caption="Afriland First Bank")
     else:
@@ -203,12 +210,16 @@ with st.sidebar:
             df_clean = load_and_preprocess(uploaded_file)
             st.success("Données de l'enquête injectées avec succès !")
         except Exception as e:
-            st.error(f"Erreur d'analyse du fichier : {e}")
+            st.error(f"⚠️ Échec de l'importation : {e}")
     else:
         fichier_historique = "Exemple_donnée.xlsx - Feuil1.csv"
         if os.path.exists(fichier_historique):
-            df_clean = load_and_preprocess(fichier_historique)
-            st.info("Affichage basé sur les données historiques de référence.")
+            try:
+                df_clean = load_and_preprocess(fichier_historique)
+                st.info("Affichage basé sur les données historiques de référence.")
+            except Exception as e:
+                st.error(f"Fichier historique corrompu : {e}")
+                st.warning("Veuillez importer un fichier CSV valide manuellement ci-dessus.")
         else:
             st.warning("⚠️ Aucun fichier détecté. Veuillez importer un fichier d'enquête pour activer l'analyse.")
             
@@ -225,7 +236,7 @@ with st.sidebar:
 # ==============================================================================
 if df_clean is None:
     st.markdown("<div class='main-title'>Plateforme d'Analyse Clientèle</div>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align:center;'>Veuillez charger votre fichier Excel converti en CSV à gauche pour commencer.</p>", unsafe_allow_html=True)
+    st.markdown("<div class='insight-box' style='text-align:center;'><b>Statut du système :</b> En attente de données opérationnelles valides.<br>Veuillez charger votre fichier d'enquête client converti en format CSV à l'aide de l'onglet d'importation situé sur la barre latérale gauche.</div>", unsafe_allow_html=True)
 else:
     # --------------------------------------------------------------------------
     # PAGE 1 : VISION GLOBALE NATIONALE
@@ -257,7 +268,7 @@ else:
         with k3:
             st.markdown(f"<div class='kpi-card'><div class='kpi-value'>{tx_satisfaction:.1f}%</div><div class='kpi-label'>Taux de Satisfaction</div></div>", unsafe_allow_html=True)
         with k4:
-            val_acc = f"{avg_accueil:.2f} / 5" if not pd.isna(avg_accueil) else "N/A"
+            val_acc = f"{avg_accueil:.2f} / 5" if not pd.isna(avg_acc) else "N/A"
             st.markdown(f"<div class='kpi-card'><div class='kpi-value'>{val_acc}</div><div class='kpi-label'>Moyenne Accueil Guichet</div></div>", unsafe_allow_html=True)
             
         st.markdown("<br>", unsafe_allow_html=True)
@@ -375,7 +386,6 @@ else:
         
         df_ml = df_clean[['score_attente_num', 'score_accueil_num', 'score_effort_num', 'nps_class']].dropna()
         
-        # Structure conditionnelle sécurisée avec le symbole ':' requis
         if len(df_ml) > 30:
             le = LabelEncoder()
             df_ml['target_nps'] = le.fit_transform(df_ml['nps_class'])
