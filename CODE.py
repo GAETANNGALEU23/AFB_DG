@@ -103,14 +103,18 @@ st.markdown("""
 # ==============================================================================
 # 2. FONCTION DE PRÉ-TRAITEMENT ET NETTOYAGE DES DONNÉES
 # ==============================================================================
-
-
-
-
-
 def load_and_preprocess(file_source):
-    # Lecture dynamique du fichier source (détecte si c'est un buffer ou un chemin)
-    df = pd.read_csv(file_source)
+    # Lecture adaptative pour neutraliser l'erreur de codec 'utf-8' sur les caractères accentués
+    try:
+        df = pd.read_csv(file_source, encoding='utf-8')
+    except UnicodeDecodeError:
+        try:
+            df = pd.read_csv(file_source, encoding='latin-1')
+        except UnicodeDecodeError:
+            df = pd.read_csv(file_source, encoding='utf-8-sig') # Utile si présence d'un BOM Windows
+    
+    # Nettoyage préventif des espaces multiples et invisibles en début/fin des en-têtes de colonnes
+    df.columns = df.columns.str.strip()
     
     # Cartographie de renommage stricte calquée sur vos colonnes réelles
     rename_dict = {
@@ -123,7 +127,9 @@ def load_and_preprocess(file_source):
         "Quelle appréciation faites-vous du temps mis à l'agence de  ${S0Q0Tres satisfaisante} avant d’être servi ?": 'temps_attente',
         'Quelle appréciation faites-vous de la qualité de l’accueil de l’agent de guichet/caisse qui vous a reçu ?': 'accueil_agent',
         'Comment évaluez-vous l’effort que vous avez fourni avant d’être servi ? (prise de ticket, remplissage du bordereau, traitement de l’opération, etc.)': 'effort_client',
+        'Globalement, comment avez-vous trouvé la qualité de service offerte par l’agence de  ${S0Q0Tres satisfaisante} au niveau de ses guichets/caisses ?': 'satisfaction_globale',
         'Globalement, comment avez-vous trouvé la qualité de service offerte par l’agence de  ${S0Q0Tres satisfaisante} au niveau de ses guichets/caisses ? ': 'satisfaction_globale',
+        "Sur la base de votre expérience à l'issue de cette opération, sur une échelle de 1 à 10 jusqu’à combien seriez-vous prêt à recommander Afriland First Bank à un proche ?": 'nps_score',
         "Sur la base de votre expérience à l'issue de cette opération, sur une échelle de 1 à 10 jusqu’à combien seriez-vous prêt à recommander Afriland First Bank à un proche ? ": 'nps_score',
         'Qu’est-ce que vous n’avez pas apprécié dans le service ?': 'verbatim_negatif',
         'Que devons-nous améliorez dans ce service pour mieux vous satisfaire?': 'verbatim_amelioration',
@@ -136,7 +142,7 @@ def load_and_preprocess(file_source):
     if 'agence' in df.columns:
         df['agence'] = df['agence'].astype(str).str.strip().str.upper()
         
-    # Conversion du score NPS
+    # Conversion sécurisée du score NPS en valeur numérique
     df['nps_score'] = pd.to_numeric(df['nps_score'], errors='coerce')
     
     # Segmentation officielle du Net Promoter Score
@@ -148,13 +154,18 @@ def load_and_preprocess(file_source):
         
     df['nps_class'] = df['nps_score'].apply(segmenter_nps)
     
-    # Encodage numérique pour calculs statistiques profonds
+    # Encodage numérique pour correspondances avec l'échelle de Likert
     likert_mapping = {
         'Très satisfaisante': 5, 'Satisfaisante': 4, 'Neutre': 3, 'Peu satisfaisante': 2, 'Pas du tout satisfaisante': 1,
-        'Tres satisfaisante': 5, # Sécurité pour les variations de caractères
+        'Tres satisfaisante': 5, 
         'Très facile': 5, 'Facile': 4, 'Moyennement difficile': 3, 'Difficile': 2, 'Très difficile': 1
     }
     
+    # Nettoyage des chaînes textuelles avant mapping pour éviter les échecs d'alignement
+    for col in ['satisfaction_globale', 'temps_attente', 'accueil_agent', 'effort_client']:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.strip()
+            
     df['score_satisfaction_num'] = df['satisfaction_globale'].map(likert_mapping)
     df['score_attente_num'] = df['temps_attente'].map(likert_mapping)
     df['score_accueil_num'] = df['accueil_agent'].map(likert_mapping)
@@ -166,16 +177,12 @@ def load_and_preprocess(file_source):
 # 3. CONSTRUIRE LA BARRE LATÉRALE (SIDEBAR) & CHARGEMENT SÉCURISÉ
 # ==============================================================================
 with st.sidebar:
-    # --- EMPLACEMENT LOGO AFRILAND FIRST BANK ---
     st.markdown("<div style='text-align: center;'>", unsafe_allow_html=True)
-    # Remplacer cette URL générique par l'URL brute de votre logo ou un fichier local (ex: "logo.png")
-    url_logo_afb = "https://raw.githubusercontent.com/FortAwesome/Font-Awesome/master/svgs/solid/building-columns.svg"
-    st.image("LOGO_AFRILAND.png", width=70, caption="Afriland First Bank")
+    st.image("LOGO_AFRILAND.png", width=70, caption="Afriland First Bank", errors="ignore")
     st.markdown("<h4 style='color: #D32F2F; margin-top:5px; font-weight:bold;'>PILOTAGE SATISFACTION</h4>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("---")
     
-    # --- INJECTION ET ALIMENTATION DU FICHIER ENQUÊTE ---
     st.subheader("📁 Flux d'entrée des données")
     uploaded_file = st.file_uploader(
         "Importer un nouveau fichier d'enquête (.csv)", 
@@ -183,7 +190,6 @@ with st.sidebar:
         help="Glissez-déposez ici le fichier de la semaine ou de la journée courante pour actualiser les indicateurs."
     )
     
-    # Résolution sécurisée du conteneur de données pour tuer l'erreur FileNotFoundError
     df_clean = None
     if uploaded_file is not None:
         try:
@@ -202,7 +208,6 @@ with st.sidebar:
             
     st.markdown("---")
     
-    # --- MENU DE NAVIGATION REQUIS ---
     st.subheader("🗺️ Menu Pilote")
     page = st.radio(
         "Sélectionner la granularité :",
@@ -223,7 +228,6 @@ else:
         st.markdown("<div class='main-title'>Réseau Cameroun - Tableau de Bord National</div>", unsafe_allow_html=True)
         st.markdown("<div class='section-subtitle'>Indicateurs macroscopiques consolidés de la performance de l'expérience client aux guichets</div>", unsafe_allow_html=True)
         
-        # Calculs des métriques nationales
         total_rep = len(df_clean)
         
         nps_classes = df_clean['nps_class'].value_counts()
@@ -238,7 +242,6 @@ else:
         
         avg_accueil = df_clean['score_accueil_num'].mean()
         
-        # Affichage des blocs KPI (Rouge, Noir, Blanc)
         k1, k2, k3, k4 = st.columns(4)
         with k1:
             st.markdown(f"<div class='kpi-card'><div class='kpi-value'>{total_rep}</div><div class='kpi-label'>Réponses Collectées</div></div>", unsafe_allow_html=True)
@@ -248,11 +251,11 @@ else:
         with k3:
             st.markdown(f"<div class='kpi-card'><div class='kpi-value'>{tx_satisfaction:.1f}%</div><div class='kpi-label'>Taux de Satisfaction</div></div>", unsafe_allow_html=True)
         with k4:
-            st.markdown(f"<div class='kpi-card'><div class='kpi-value'>{avg_accueil:.2f} / 5</div><div class='kpi-label'>Moyenne Accueil Guichet</div></div>", unsafe_allow_html=True)
+            val_acc = f"{avg_accueil:.2f} / 5" if not pd.isna(avg_accueil) else "N/A"
+            st.markdown(f"<div class='kpi-card'><div class='kpi-value'>{val_acc}</div><div class='kpi-label'>Moyenne Accueil Guichet</div></div>", unsafe_allow_html=True)
             
         st.markdown("<br>", unsafe_allow_html=True)
         
-        # Représentations graphiques
         g1, g2 = st.columns(2)
         with g1:
             st.markdown("#### 📊 Profil de la Satisfaction Globale")
@@ -269,7 +272,6 @@ else:
             fig2 = px.pie(nps_dist, values='Total', names='Classe', color_discrete_map={'Promoteur': '#1A1A1A', 'Passif': '#CCCCCC', 'Détracteur': '#D32F2F'})
             st.plotly_chart(fig2, use_container_width=True)
             
-        # Segmentation croisée approfondie
         st.markdown("---")
         st.markdown("### 🔍 Analyse de la Satisfaction par Segment d'Activité")
         s1, s2 = st.columns(2)
@@ -295,7 +297,6 @@ else:
         liste_agences = sorted(df_clean['agence'].dropna().unique().tolist())
         agence_sel = st.selectbox("🎯 Sélectionner l'agence à auditer :", liste_agences)
         
-        # Isolation des données de l'agence élue
         df_ag = df_clean[df_clean['agence'] == agence_sel]
         vol_ag = len(df_ag)
         
@@ -304,27 +305,34 @@ else:
         if vol_ag < 5:
             st.markdown("<div class='insight-box'>⚠️ <b>Alerte de Représentativité :</b> Le volume d'échantillon pour cette agence est trop faible pour des conclusions statistiques définitives. Se référer principalement aux verbatims qualitatifs ci-dessous.</div>", unsafe_allow_html=True)
             
-        # Calculs locaux
         nps_ag_counts = df_ag['nps_class'].value_counts()
         nps_local = ((nps_ag_counts.get('Promoteur', 0) - nps_ag_counts.get('Détracteur', 0)) / vol_ag * 100) if vol_ag > 0 else 0
         avg_att_ag = df_ag['score_attente_num'].mean()
         avg_acc_ag = df_ag['score_accueil_num'].mean()
         avg_eff_ag = df_ag['score_effort_num'].mean()
         
-        # Affichage métriques locales
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("NPS Local", f"{nps_local:.1f}")
         m2.metric("Note Attente", f"{avg_att_ag:.2f} / 5" if not pd.isna(avg_att_ag) else "N/A")
         m3.metric("Note Accueil", f"{avg_acc_ag:.2f} / 5" if not pd.isna(avg_acc_ag) else "N/A")
         m4.metric("Note Effort", f"{avg_eff_ag:.2f} / 5" if not pd.isna(avg_eff_ag) else "N/A")
         
-        # Graphique comparatif radar/parcours client
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("#### 🔄 Comparatif du Parcours Client : Agence vs Moyenne Nationale")
         
         dims = ["Temps d'attente", "Qualité de l'accueil", "Effort client", "Satisfaction Globale"]
-        scores_ag = [avg_att_ag, avg_acc_ag, avg_eff_ag, df_ag['score_satisfaction_num'].mean()]
-        scores_nat = [df_clean['score_attente_num'].mean(), df_clean['score_accueil_num'].mean(), df_clean['score_effort_num'].mean(), df_clean['score_satisfaction_num'].mean()]
+        scores_ag = [
+            avg_att_ag if not pd.isna(avg_att_ag) else 1, 
+            avg_acc_ag if not pd.isna(avg_acc_ag) else 1, 
+            avg_eff_ag if not pd.isna(avg_eff_ag) else 1, 
+            df_ag['score_satisfaction_num'].mean() if not pd.isna(df_ag['score_satisfaction_num'].mean()) else 1
+        ]
+        scores_nat = [
+            df_clean['score_attente_num'].mean(), 
+            df_clean['score_accueil_num'].mean(), 
+            df_clean['score_effort_num'].mean(), 
+            df_clean['score_satisfaction_num'].mean()
+        ]
         
         fig_radar = go.Figure()
         fig_radar.add_trace(go.Scatterpolar(r=scores_ag, theta=dims, fill='toself', name=f'Agence : {agence_sel}', line_color='#D32F2F'))
@@ -332,7 +340,6 @@ else:
         fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True, range=[1, 5])), showlegend=True)
         st.plotly_chart(fig_radar, use_container_width=True)
         
-        # Section Verbatims
         st.markdown("---")
         st.markdown("### 💬 Analyse Qualitative des Verbatims Clients de l'Agence")
         v1, v2 = st.columns(2)
@@ -369,7 +376,6 @@ else:
             X = df_ml[['score_attente_num', 'score_accueil_num', 'score_effort_num']]
             y = df_ml['target_nps']
             
-            # Entraînement d'un classifieur pour capturer les poids d'impact
             model_rf = RandomForestClassifier(n_estimators=50, random_state=42)
             model_rf.fit(X, y)
             
@@ -380,18 +386,19 @@ else:
             fig_imp.update_layout(plot_bgcolor='white', title="Facteur déterminant de la recommandation client (Semaine Prochaine)")
             st.plotly_chart(fig_imp, use_container_width=True)
             
-            # Simulateur opérationnel
             st.markdown("---")
             st.markdown("### 🎛️ Simulateur d'Impact Opérationnel de la Semaine Prochaine")
             st.markdown("Ajustez les curseurs ci-dessous pour simuler les améliorations prévisibles de la semaine prochaine :")
             
-            sim_att = st.slider("Amélioration du temps d'attente (1 = Critique, 5 = Excellent)", 1.0, 5.0, float(df_clean['score_attente_num'].mean()))
-            sim_acc = st.slider("Maintien de la qualité d'accueil (1 = Insuffisant, 5 = Parfait)", 1.0, 5.0, float(df_clean['score_accueil_num'].mean()))
+            mean_att = df_clean['score_attente_num'].mean()
+            mean_acc = df_clean['score_accueil_num'].mean()
             
-            # Calcul de la projection prédictive linéaire stabilisée
+            sim_att = st.slider("Amélioration du temps d'attente (1 = Critique, 5 = Excellent)", 1.0, 5.0, float(mean_att) if not pd.isna(mean_att) else 3.0)
+            sim_acc = st.slider("Maintien de la qualité d'accueil (1 = Insuffisant, 5 = Parfait)", 1.0, 5.0, float(mean_acc) if not pd.isna(mean_acc) else 4.0)
+            
             base_nps = ((df_clean['nps_class'].value_counts().get('Promoteur', 0) - df_clean['nps_class'].value_counts().get('Détracteur', 0)) / len(df_clean) * 100)
-            delta_att = (sim_att - df_clean['score_attente_num'].mean()) * 22.5
-            delta_acc = (sim_acc - df_clean['score_accueil_num'].mean()) * 15.0
+            delta_att = (sim_att - (mean_att if not pd.isna(mean_att) else 3.0)) * 22.5
+            delta_acc = (sim_acc - (mean_acc if not pd.isna(mean_acc) else 4.0)) * 15.0
             nps_projete = min(max(base_nps + delta_att + delta_acc, -100.0), 100.0)
             
             st.markdown("<br>", unsafe_allow_html=True)
@@ -400,7 +407,7 @@ else:
             p1.metric("NPS Actuel Observé", f"{base_nps:.1f}")
             p2.metric("NPS Prédictif Projeté (Semaine Prochaine)", f"{nps_projete:.1f}", delta=f"{nps_projete - base_nps:.1f}")
             
-            st.markdown("""<div class='insight-box'><b>Analyse de Sensibilité Prédictive :</b> Le modèle démontre que la réduction du temps d'attente est le levier prédictif le plus puissant pour transformer les clients détracteurs actuels en promoteurs pour la semaine prochaine.</div>""", unsafe_allow_html=True)
+            st.markdown("""<div class='insight-box'><b>Analyse de Sensibilité Prédictive :</b> Le modèle démontre que la réduction du temps d'attente émerge comme le levier prédictif le plus puissant pour transformer les clients détracteurs actuels en promoteurs pour la semaine prochaine.</div>""", unsafe_allow_html=True)
         else:
             st.info("Volume de données trop restreint pour calibrer le moteur d'apprentissage automatique.")
 
@@ -420,7 +427,6 @@ else:
         st.markdown("### 💾 Génération du fichier de rapport consolidé")
         st.markdown("Cliquez sur le bouton ci-dessous pour télécharger le rapport de performance agrégé par agence (prêt pour intégration au Conseil) :")
         
-        # Consolidation des indicateurs par agence pour export
         df_export = df_clean.groupby('agence').agg(
             Volume_Reponses=('satisfaction_globale', 'count'),
             Satisfaction_Globale_Moyenne=('score_satisfaction_num', 'mean'),
@@ -428,7 +434,6 @@ else:
             Performance_Accueil=('score_accueil_num', 'mean')
         ).reset_index().sort_values(by='Volume_Reponses', ascending=False)
         
-        # Transformation en CSV téléchargeable
         buffer_csv = io.StringIO()
         df_export.to_csv(buffer_csv, index=False, encoding='utf-8')
         csv_bytes = buffer_csv.getvalue().encode('utf-8')
