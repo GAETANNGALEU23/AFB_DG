@@ -7,6 +7,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import LabelEncoder
 import datetime
 import io
+import os
 
 # ==============================================================================
 # 1. CONFIGURATION DE LA PAGE & STYLE CUSTOMISÉ (CHARTE ROUGE, NOIR, BLANC)
@@ -111,7 +112,7 @@ def load_and_preprocess(file_source):
         try:
             df = pd.read_csv(file_source, encoding='latin-1')
         except UnicodeDecodeError:
-            df = pd.read_csv(file_source, encoding='utf-8-sig') # Utile si présence d'un BOM Windows
+            df = pd.read_csv(file_source, encoding='utf-8-sig')
     
     # Nettoyage préventif des espaces multiples et invisibles en début/fin des en-têtes de colonnes
     df.columns = df.columns.str.strip()
@@ -178,7 +179,14 @@ def load_and_preprocess(file_source):
 # ==============================================================================
 with st.sidebar:
     st.markdown("<div style='text-align: center;'>", unsafe_allow_html=True)
-    st.image("LOGO_AFRILAND.png", width=70, caption="Afriland First Bank", errors="ignore")
+    
+    # CORRECTION ICI : Gestion sécurisée de l'absence du fichier image sans planter l'application
+    if os.path.exists("LOGO_AFRILAND.png"):
+        st.image("LOGO_AFRILAND.png", width=70, caption="Afriland First Bank")
+    else:
+        # Affichage d'une icône alternative si le logo local est introuvable sur Streamlit Cloud
+        st.markdown("<h1 style='text-align: center; margin:0;'>🏦</h1>", unsafe_allow_html=True)
+        
     st.markdown("<h4 style='color: #D32F2F; margin-top:5px; font-weight:bold;'>PILOTAGE SATISFACTION</h4>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("---")
@@ -198,7 +206,6 @@ with st.sidebar:
         except Exception as e:
             st.error(f"Erreur d'analyse du fichier : {e}")
     else:
-        import os
         fichier_historique = "Exemple_donnée.xlsx - Feuil1.csv"
         if os.path.exists(fichier_historique):
             df_clean = load_and_preprocess(fichier_historique)
@@ -369,80 +376,4 @@ else:
         
         df_ml = df_clean[['score_attente_num', 'score_accueil_num', 'score_effort_num', 'nps_class']].dropna()
         
-        if len(df_ml) > 30:
-            le = LabelEncoder()
-            df_ml['target_nps'] = le.fit_transform(df_ml['nps_class'])
-            
-            X = df_ml[['score_attente_num', 'score_accueil_num', 'score_effort_num']]
-            y = df_ml['target_nps']
-            
-            model_rf = RandomForestClassifier(n_estimators=50, random_state=42)
-            model_rf.fit(X, y)
-            
-            importances = model_rf.feature_importances_
-            labels_f = ["Temps d'attente aux guichets", "Qualité de l'accueil agent", "Effort global fourni par le client"]
-            
-            fig_imp = px.bar(x=labels_f, y=importances, color_discrete_sequence=['#D32F2F'], labels={'x': 'Dimension du parcours', 'y': "Poids de causalité prédictive"})
-            fig_imp.update_layout(plot_bgcolor='white', title="Facteur déterminant de la recommandation client (Semaine Prochaine)")
-            st.plotly_chart(fig_imp, use_container_width=True)
-            
-            st.markdown("---")
-            st.markdown("### 🎛️ Simulateur d'Impact Opérationnel de la Semaine Prochaine")
-            st.markdown("Ajustez les curseurs ci-dessous pour simuler les améliorations prévisibles de la semaine prochaine :")
-            
-            mean_att = df_clean['score_attente_num'].mean()
-            mean_acc = df_clean['score_accueil_num'].mean()
-            
-            sim_att = st.slider("Amélioration du temps d'attente (1 = Critique, 5 = Excellent)", 1.0, 5.0, float(mean_att) if not pd.isna(mean_att) else 3.0)
-            sim_acc = st.slider("Maintien de la qualité d'accueil (1 = Insuffisant, 5 = Parfait)", 1.0, 5.0, float(mean_acc) if not pd.isna(mean_acc) else 4.0)
-            
-            base_nps = ((df_clean['nps_class'].value_counts().get('Promoteur', 0) - df_clean['nps_class'].value_counts().get('Détracteur', 0)) / len(df_clean) * 100)
-            delta_att = (sim_att - (mean_att if not pd.isna(mean_att) else 3.0)) * 22.5
-            delta_acc = (sim_acc - (mean_acc if not pd.isna(mean_acc) else 4.0)) * 15.0
-            nps_projete = min(max(base_nps + delta_att + delta_acc, -100.0), 100.0)
-            
-            st.markdown("<br>", unsafe_allow_html=True)
-            st.markdown("#### Projections des indicateurs pour la semaine prochaine :")
-            p1, p2 = st.columns(2)
-            p1.metric("NPS Actuel Observé", f"{base_nps:.1f}")
-            p2.metric("NPS Prédictif Projeté (Semaine Prochaine)", f"{nps_projete:.1f}", delta=f"{nps_projete - base_nps:.1f}")
-            
-            st.markdown("""<div class='insight-box'><b>Analyse de Sensibilité Prédictive :</b> Le modèle démontre que la réduction du temps d'attente émerge comme le levier prédictif le plus puissant pour transformer les clients détracteurs actuels en promoteurs pour la semaine prochaine.</div>""", unsafe_allow_html=True)
-        else:
-            st.info("Volume de données trop restreint pour calibrer le moteur d'apprentissage automatique.")
-
-    # --------------------------------------------------------------------------
-    # PAGE 4 : RAPPORT DE SYNTHÈSE & TÉLÉCHARGEMENT
-    # --------------------------------------------------------------------------
-    elif page == "📝 Rapport de Synthèse & Téléchargement":
-        st.markdown("<div class='main-title'>Livrables & Exportation de la Performance</div>", unsafe_allow_html=True)
-        
-        st.markdown("""
-        ### 📑 Éléments Synthétiques du Rapport d'Étude
-        * **Contexte & Objectifs :** Évaluation hebdomadaire de la satisfaction aux guichets d'Afriland First Bank Cameroun afin de minimiser l'effort client et d'optimiser la prise en charge opérationnelle.
-        * **Limites de l'étude :** Forte asymétrie de représentativité sur certaines agences phares (ex: Hippodrome). Les résultats d'agences à faible échantillon doivent être analysés comme indicatifs.
-        """)
-        
-        st.markdown("---")
-        st.markdown("### 💾 Génération du fichier de rapport consolidé")
-        st.markdown("Cliquez sur le bouton ci-dessous pour télécharger le rapport de performance agrégé par agence (prêt pour intégration au Conseil) :")
-        
-        df_export = df_clean.groupby('agence').agg(
-            Volume_Reponses=('satisfaction_globale', 'count'),
-            Satisfaction_Globale_Moyenne=('score_satisfaction_num', 'mean'),
-            Performance_Attente=('score_attente_num', 'mean'),
-            Performance_Accueil=('score_accueil_num', 'mean')
-        ).reset_index().sort_values(by='Volume_Reponses', ascending=False)
-        
-        buffer_csv = io.StringIO()
-        df_export.to_csv(buffer_csv, index=False, encoding='utf-8')
-        csv_bytes = buffer_csv.getvalue().encode('utf-8')
-        
-        st.download_button(
-            label="📥 Télécharger le Rapport Analytique Consolidé (.CSV)",
-            data=csv_bytes,
-            file_name=f"Rapport_Satisfaction_Afriland_{datetime.date.today().strftime('%Y-%m-%d')}.csv",
-            mime="text/csv"
-        )
-        
-        st.dataframe(df_export, use_container_width=True)
+        if len(df_ml) > 3
