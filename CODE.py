@@ -109,18 +109,25 @@ def load_and_preprocess(file_source):
     if isinstance(file_source, str) and os.path.exists(file_source) and os.path.getsize(file_source) == 0:
         raise ValueError("Le fichier de référence local est complètement vide (0 octet).")
 
-    # Lecture adaptative pour gérer les encodages et intercepter les fichiers vides
+    # Lecture adaptative pour prendre en compte le CSV et le Excel (.xlsx)
     try:
-        try:
-            df = pd.read_csv(file_source, encoding='utf-8')
-        except UnicodeDecodeError:
+        # Vérification de l'extension si c'est un chemin de fichier, ou du nom si c'est un fichier uploadé
+        file_name = file_source if isinstance(file_source, str) else file_source.name
+        
+        if file_name.endswith('.xlsx') or file_name.endswith('.xls'):
+            df = pd.read_excel(file_source)
+        else:
             try:
-                df = pd.read_csv(file_source, encoding='latin-1')
+                df = pd.read_csv(file_source, encoding='utf-8')
             except UnicodeDecodeError:
-                df = pd.read_csv(file_source, encoding='utf-8-sig')
+                try:
+                    df = pd.read_csv(file_source, encoding='latin-1')
+                except UnicodeDecodeError:
+                    df = pd.read_csv(file_source, encoding='utf-8-sig')
     except pd.errors.EmptyDataError:
-        # Renvoie une exception explicite et propre au lieu d'un crash brut
         raise ValueError("Le fichier importé ne contient aucune donnée ou colonne valide (Fichier vide).")
+    except Exception as e:
+        raise ValueError(f"Erreur lors de la lecture du fichier : {e}")
     
     # Nettoyage préventif des espaces multiples et invisibles en début/fin des en-têtes de colonnes
     df.columns = df.columns.str.strip()
@@ -147,6 +154,16 @@ def load_and_preprocess(file_source):
     
     df = df.rename(columns=rename_dict)
     
+    # Conversion sécurisée de la colonne date_operation au format Date Datetime
+    if 'date_operation' in df.columns:
+        df['date_operation'] = pd.to_datetime(df['date_operation'], errors='coerce').dt.date
+    elif 'date_debut' in df.columns:
+        # Solution de repli sur la date de début du questionnaire si date_operation est absente
+        df['date_operation'] = pd.to_datetime(df['date_debut'], errors='coerce').dt.date
+    else:
+        # Si aucune date n'existe, on applique la date du jour par défaut
+        df['date_operation'] = datetime.date.today()
+
     # Nettoyage et uniformisation du libellé des agences
     if 'agence' in df.columns:
         df['agence'] = df['agence'].astype(str).str.strip().str.upper()
@@ -198,32 +215,67 @@ with st.sidebar:
     st.markdown("---")
     
     st.subheader("📁 Flux d'entrée des données")
+    # Acceptation des fichiers .csv ET .xlsx
     uploaded_file = st.file_uploader(
-        "Importer un nouveau fichier d'enquête (.csv)", 
-        type=["csv"],
-        help="Glissez-déposez ici le fichier de la semaine ou de la journée courante pour actualiser les indicateurs."
+        "Importer un nouveau fichier d'enquête (.csv, .xlsx)", 
+        type=["csv", "xlsx"],
+        help="Glissez-déposez ici le fichier Excel ou CSV pour actualiser dynamiquement les indicateurs."
     )
     
-    df_clean = None
+    df_raw = None
     if uploaded_file is not None:
         try:
-            df_clean = load_and_preprocess(uploaded_file)
-            st.success("Données de l'enquête injectées avec succès !")
+            df_raw = load_and_preprocess(uploaded_file)
+            st.success("Données injectées avec succès !")
         except Exception as e:
             st.error(f"⚠️ Échec de l'importation : {e}")
     else:
         fichier_historique = "Exemple_donnée.xlsx - Feuil1.csv"
         if os.path.exists(fichier_historique):
             try:
-                df_clean = load_and_preprocess(fichier_historique)
+                df_raw = load_and_preprocess(fichier_historique)
                 st.info("Affichage basé sur les données historiques de référence.")
             except Exception as e:
                 st.error(f"Fichier historique corrompu : {e}")
-                st.warning("Veuillez importer un fichier CSV valide manuellement ci-dessus.")
+                st.warning("Veuillez importer un fichier valide manuellement ci-dessus.")
         else:
-            st.warning("⚠️ Aucun fichier détecté. Veuillez importer un fichier d'enquête pour activer l'analyse.")
+            st.warning("⚠️ Aucun fichier détecté. Veuillez charger un fichier pour activer l'analyse.")
             
     st.markdown("---")
+    
+    # --------------------------------==========================================
+    # MODULE DE FILTRAGE PAR DATE INDÉPENDANT
+    # --------------------------------==========================================
+    df_clean = None
+    if df_raw is not None:
+        st.subheader("📅 Filtre Temporel")
+        
+        # Extraction des dates minimales et maximales valides trouvées dans les données
+        dates_valides = df_raw['date_operation'].dropna()
+        if not dates_valides.empty:
+            min_date = min(dates_valides)
+            max_date = max(dates_valides)
+            
+            # Sélecteur de plage de dates (Date Range Slider/Input)
+            date_range = st.date_input(
+                "Sélectionner la période d'analyse :",
+                value=(min_date, max_date),
+                min_value=min_date,
+                max_value=max_date,
+                help="Filtre l'ensemble des indicateurs du réseau selon les dates choisies."
+            )
+            
+            # Application stricte du filtrage si la saisie comporte bien les deux bornes
+            if isinstance(date_range, tuple) and len(date_range) == 2:
+                start_date, end_date = date_range
+                df_clean = df_raw[(df_raw['date_operation'] >= start_date) & (df_raw['date_operation'] <= end_date)]
+            else:
+                df_clean = df_raw.copy()
+        else:
+            df_clean = df_raw.copy()
+            st.warning("Aucune date d'opération valide détectée pour le filtrage.")
+            
+        st.markdown("---")
     
     st.subheader("🗺️ Menu Pilote")
     page = st.radio(
@@ -236,7 +288,10 @@ with st.sidebar:
 # ==============================================================================
 if df_clean is None:
     st.markdown("<div class='main-title'>Plateforme d'Analyse Clientèle</div>", unsafe_allow_html=True)
-    st.markdown("<div class='insight-box' style='text-align:center;'><b>Statut du système :</b> En attente de données opérationnelles valides.<br>Veuillez charger votre fichier d'enquête client converti en format CSV à l'aide de l'onglet d'importation situé sur la barre latérale gauche.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='insight-box' style='text-align:center;'><b>Statut du système :</b> En attente de données opérationnelles valides.<br>Veuillez charger votre fichier d'enquête client au format CSV ou XLSX à l'aide de la zone d'importation.</div>", unsafe_allow_html=True)
+elif df_clean.empty:
+    st.markdown("<div class='main-title'>Plateforme d'Analyse Clientèle</div>", unsafe_allow_html=True)
+    st.markdown("<div class='insight-box' style='text-align:center; color:#D32F2F;'><b>Filtre vide :</b> Aucune opération n'a été enregistrée dans la plage de dates sélectionnée.<br>Veuillez élargir votre filtre de dates dans la barre latérale.</div>", unsafe_allow_html=True)
 else:
     # --------------------------------------------------------------------------
     # PAGE 1 : VISION GLOBALE NATIONALE
@@ -268,7 +323,7 @@ else:
         with k3:
             st.markdown(f"<div class='kpi-card'><div class='kpi-value'>{tx_satisfaction:.1f}%</div><div class='kpi-label'>Taux de Satisfaction</div></div>", unsafe_allow_html=True)
         with k4:
-            val_acc = f"{avg_accueil:.2f} / 5" if not pd.isna(avg_acc) else "N/A"
+            val_acc = f"{avg_accueil:.2f} / 5" if not pd.isna(avg_accueil) else "N/A"
             st.markdown(f"<div class='kpi-card'><div class='kpi-value'>{val_acc}</div><div class='kpi-label'>Moyenne Accueil Guichet</div></div>", unsafe_allow_html=True)
             
         st.markdown("<br>", unsafe_allow_html=True)
@@ -312,70 +367,73 @@ else:
         st.markdown("<div class='main-title'>Diagnostic Pointilleux par Point de Vente</div>", unsafe_allow_html=True)
         
         liste_agences = sorted(df_clean['agence'].dropna().unique().tolist())
-        agence_sel = st.selectbox("🎯 Sélectionner l'agence à auditer :", liste_agences)
-        
-        df_ag = df_clean[df_clean['agence'] == agence_sel]
-        vol_ag = len(df_ag)
-        
-        st.markdown(f"### Performance Locale : <span style='color:#D32F2F;'>{agence_sel}</span> ({vol_ag} répondants)", unsafe_allow_html=True)
-        
-        if vol_ag < 5:
-            st.markdown("<div class='insight-box'>⚠️ <b>Alerte de Représentativité :</b> Le volume d'échantillon pour cette agence est trop faible pour des conclusions statistiques définitives. Se référer principalement aux verbatims qualitatifs ci-dessous.</div>", unsafe_allow_html=True)
+        if not liste_agences:
+            st.warning("Aucune agence disponible pour la période sélectionnée.")
+        else:
+            agence_sel = st.selectbox("🎯 Sélectionner l'agence à auditer :", liste_agences)
             
-        nps_ag_counts = df_ag['nps_class'].value_counts()
-        nps_local = ((nps_ag_counts.get('Promoteur', 0) - nps_ag_counts.get('Détracteur', 0)) / vol_ag * 100) if vol_ag > 0 else 0
-        avg_att_ag = df_ag['score_attente_num'].mean()
-        avg_acc_ag = df_ag['score_accueil_num'].mean()
-        avg_eff_ag = df_ag['score_effort_num'].mean()
-        
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("NPS Local", f"{nps_local:.1f}")
-        m2.metric("Note Attente", f"{avg_att_ag:.2f} / 5" if not pd.isna(avg_att_ag) else "N/A")
-        m3.metric("Note Accueil", f"{avg_acc_ag:.2f} / 5" if not pd.isna(avg_acc_ag) else "N/A")
-        m4.metric("Note Effort", f"{avg_eff_ag:.2f} / 5" if not pd.isna(avg_eff_ag) else "N/A")
-        
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("#### 🔄 Comparatif du Parcours Client : Agence vs Moyenne Nationale")
-        
-        dims = ["Temps d'attente", "Qualité de l'accueil", "Effort client", "Satisfaction Globale"]
-        scores_ag = [
-            avg_att_ag if not pd.isna(avg_att_ag) else 1, 
-            avg_acc_ag if not pd.isna(avg_acc_ag) else 1, 
-            avg_eff_ag if not pd.isna(avg_eff_ag) else 1, 
-            df_ag['score_satisfaction_num'].mean() if not pd.isna(df_ag['score_satisfaction_num'].mean()) else 1
-        ]
-        scores_nat = [
-            df_clean['score_attente_num'].mean(), 
-            df_clean['score_accueil_num'].mean(), 
-            df_clean['score_effort_num'].mean(), 
-            df_clean['score_satisfaction_num'].mean()
-        ]
-        
-        fig_radar = go.Figure()
-        fig_radar.add_trace(go.Scatterpolar(r=scores_ag, theta=dims, fill='toself', name=f'Agence : {agence_sel}', line_color='#D32F2F'))
-        fig_radar.add_trace(go.Scatterpolar(r=scores_nat, theta=dims, fill='toself', name='Moyenne Nationale Réseau', line_color='#1A1A1A'))
-        fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True, range=[1, 5])), showlegend=True)
-        st.plotly_chart(fig_radar, use_container_width=True)
-        
-        st.markdown("---")
-        st.markdown("### 💬 Analyse Qualitative des Verbatims Clients de l'Agence")
-        v1, v2 = st.columns(2)
-        with v1:
-            st.markdown("<b style='color:#D32F2F;'>Points d'Insatisfaction Soulevés :</b>", unsafe_allow_html=True)
-            verbs_neg = df_ag['verbatim_negatif'].dropna().tolist()
-            if verbs_neg:
-                for vn in verbs_neg[:5]:
-                    st.write(f"❌ *\"{vn}\"*")
-            else:
-                st.write("Aucun point négatif relevé cette semaine.")
-        with v2:
-            st.markdown("<b style='color:#1A1A1A;'>Pistes d'Amélioration Recommandées :</b>", unsafe_allow_html=True)
-            verbs_am = df_ag['verbatim_amelioration'].dropna().tolist()
-            if verbs_am:
-                for va in verbs_am[:5]:
-                    st.write(f"⚙️ *\"{va}\"*")
-            else:
-                st.write("Aucune suggestion d'amélioration enregistrée.")
+            df_ag = df_clean[df_clean['agence'] == agence_sel]
+            vol_ag = len(df_ag)
+            
+            st.markdown(f"### Performance Locale : <span style='color:#D32F2F;'>{agence_sel}</span> ({vol_ag} répondants)", unsafe_allow_html=True)
+            
+            if vol_ag < 5:
+                st.markdown("<div class='insight-box'>⚠️ <b>Alerte de Représentativité :</b> Le volume d'échantillon pour cette agence sur cette période est trop faible pour des conclusions statistiques définitives.</div>", unsafe_allow_html=True)
+                
+            nps_ag_counts = df_ag['nps_class'].value_counts()
+            nps_local = ((nps_ag_counts.get('Promoteur', 0) - nps_ag_counts.get('Détracteur', 0)) / vol_ag * 100) if vol_ag > 0 else 0
+            avg_att_ag = df_ag['score_attente_num'].mean()
+            avg_acc_ag = df_ag['score_accueil_num'].mean()
+            avg_eff_ag = df_ag['score_effort_num'].mean()
+            
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("NPS Local", f"{nps_local:.1f}")
+            m2.metric("Note Attente", f"{avg_att_ag:.2f} / 5" if not pd.isna(avg_att_ag) else "N/A")
+            m3.metric("Note Accueil", f"{avg_acc_ag:.2f} / 5" if not pd.isna(avg_acc_ag) else "N/A")
+            m4.metric("Note Effort", f"{avg_eff_ag:.2f} / 5" if not pd.isna(avg_eff_ag) else "N/A")
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown("#### 🔄 Comparatif du Parcours Client : Agence vs Moyenne Nationale (Période Filtrée)")
+            
+            dims = ["Temps d'attente", "Qualité de l'accueil", "Effort client", "Satisfaction Globale"]
+            scores_ag = [
+                avg_att_ag if not pd.isna(avg_att_ag) else 1, 
+                avg_acc_ag if not pd.isna(avg_acc_ag) else 1, 
+                avg_eff_ag if not pd.isna(avg_eff_ag) else 1, 
+                df_ag['score_satisfaction_num'].mean() if not pd.isna(df_ag['score_satisfaction_num'].mean()) else 1
+            ]
+            scores_nat = [
+                df_clean['score_attente_num'].mean(), 
+                df_clean['score_accueil_num'].mean(), 
+                df_clean['score_effort_num'].mean(), 
+                df_clean['score_satisfaction_num'].mean()
+            ]
+            
+            fig_radar = go.Figure()
+            fig_radar.add_trace(go.Scatterpolar(r=scores_ag, theta=dims, fill='toself', name=f'Agence : {agence_sel}', line_color='#D32F2F'))
+            fig_radar.add_trace(go.Scatterpolar(r=scores_nat, theta=dims, fill='toself', name='Moyenne Filtrée Réseau', line_color='#1A1A1A'))
+            fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True, range=[1, 5])), showlegend=True)
+            st.plotly_chart(fig_radar, use_container_width=True)
+            
+            st.markdown("---")
+            st.markdown("### 💬 Analyse Qualitative des Verbatims Clients de l'Agence")
+            v1, v2 = st.columns(2)
+            with v1:
+                st.markdown("<b style='color:#D32F2F;'>Points d'Insatisfaction Soulevés :</b>", unsafe_allow_html=True)
+                verbs_neg = df_ag['verbatim_negatif'].dropna().tolist()
+                if verbs_neg:
+                    for vn in verbs_neg[:5]:
+                        st.write(f"❌ *\"{vn}\"*")
+                else:
+                    st.write("Aucun point négatif relevé sur cette période.")
+            with v2:
+                st.markdown("<b style='color:#1A1A1A;'>Pistes d'Amélioration Recommandées :</b>", unsafe_allow_html=True)
+                verbs_am = df_ag['verbatim_amelioration'].dropna().tolist()
+                if verbs_am:
+                    for va in verbs_am[:5]:
+                        st.write(f"⚙️ *\"{va}\"*")
+                else:
+                    st.write("Aucune suggestion d'amélioration enregistrée.")
 
     # --------------------------------------------------------------------------
     # PAGE 3 : MODÉLISATION & PRÉDICTIONS S+1
@@ -400,7 +458,7 @@ else:
             labels_f = ["Temps d'attente aux guichets", "Qualité de l'accueil agent", "Effort global fourni par le client"]
             
             fig_imp = px.bar(x=labels_f, y=importances, color_discrete_sequence=['#D32F2F'], labels={'x': 'Dimension du parcours', 'y': "Poids de causalité prédictive"})
-            fig_imp.update_layout(plot_bgcolor='white', title="Facteur déterminant de la recommandation client (Semaine Prochaine)")
+            fig_imp.update_layout(plot_bgcolor='white', title="Facteur déterminant de la recommandation client (Sur la base filtrée)")
             st.plotly_chart(fig_imp, use_container_width=True)
             
             st.markdown("---")
@@ -424,9 +482,9 @@ else:
             p1.metric("NPS Actuel Observé", f"{base_nps:.1f}")
             p2.metric("NPS Prédictif Projeté (Semaine Prochaine)", f"{nps_projete:.1f}", delta=f"{nps_projete - base_nps:.1f}")
             
-            st.markdown("""<div class='insight-box'><b>Analyse de Sensibilité Prédictive :</b> Le modèle démontre que la réduction du temps d'attente émerge comme le levier prédictif le plus puissant pour transformer les clients détracteurs actuels en promoteurs pour la semaine prochaine.</div>""", unsafe_allow_html=True)
+            st.markdown("""<div class='insight-box'><b>Analyse de Sensibilité Prédictive :</b> Le modèle démontre que la réduction du temps d'attente émerge comme le levier prédictif le plus puissant pour transformer les clients détracteurs actuels en promoteurs.</div>""", unsafe_allow_html=True)
         else:
-            st.info("📊 Volume de réponses insuffisant pour calibrer le moteur d'apprentissage automatique (Minimum 30 lignes de données propres requises).")
+            st.info("📊 Volume de réponses insuffisant sur la période filtrée pour calibrer le moteur d'apprentissage automatique (Minimum 30 lignes de données propres requises).")
 
     # --------------------------------------------------------------------------
     # PAGE 4 : RAPPORT DE SYNTHÈSE & TÉLÉCHARGEMENT
@@ -436,8 +494,8 @@ else:
         
         st.markdown("""
         ### 📑 Éléments Synthétiques du Rapport d'Étude
-        * **Contexte & Objectifs :** Évaluation hebdomadaire de la satisfaction aux guichets d'Afriland First Bank Cameroun afin de minimiser l'effort client et d'optimiser la prise en charge opérationnelle.
-        * **Limites de l'étude :** Forte asymétrie de représentativité sur certaines agences phares (ex: Hippodrome). Les résultats d'agences à faible échantillon doivent être analysés comme indicatifs.
+        * **Contexte & Objectifs :** Évaluation de la satisfaction aux guichets d'Afriland First Bank Cameroun afin de minimiser l'effort client et d'optimiser la prise en charge opérationnelle.
+        * **Limites de l'étude :** Forte asymétrie de représentativité sur certaines agences phares. Les résultats d'agences à faible échantillon doivent être analysés comme indicatifs.
         """)
         
         st.markdown("---")
